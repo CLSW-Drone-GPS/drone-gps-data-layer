@@ -1,0 +1,3 @@
+
+include ':app', ':wear'
+rootProject.name='Drone GPS'
