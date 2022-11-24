@@ -13,6 +13,7 @@ import com.clsw.drone.databinding.ActivityMainBinding
 import com.google.android.gms.tasks.Tasks
 import com.google.android.gms.wearable.*
 import kotlinx.coroutines.*
+import org.json.JSONObject
 
 class MainActivity : AppCompatActivity(), CoroutineScope by MainScope(),
     DataClient.OnDataChangedListener,
@@ -26,17 +27,19 @@ class MainActivity : AppCompatActivity(), CoroutineScope by MainScope(),
     private val PAIRING: String = "PAIRING"
     private val EXIT: String = "EXIT"
     private val ASK_LOC: String = "ASK_LOC"
+    private val FLY_INFO: String = "FLY_INFO"
 
-    private val TAG_INIT: String = "Initialisation"
-    private val TAG_MSG: String = "Messages"
-
+    private val TAG: String = "Mobile Drone"
     private var nodeId: String? = null
 
     private lateinit var binding: ActivityMainBinding
 
+    private var allowFly = false
+
     @SuppressLint("SetTextI18n")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
         binding = ActivityMainBinding.inflate(layoutInflater)
         val view = binding.root
         setContentView(view)
@@ -44,110 +47,46 @@ class MainActivity : AppCompatActivity(), CoroutineScope by MainScope(),
         activityContext = this
         wearableDeviceConnected = false
 
-
         binding.checkConnectionBtn.setOnClickListener {
             if (!wearableDeviceConnected) {
                 val tempAct: Activity = activityContext as MainActivity
-                //Couroutine
-                Log.d(TAG_INIT, "Initialisation")
+                // Couroutine
+                Log.d(TAG, "Initialisation")
                 initialiseDevicePairing(tempAct)
             }
         }
 
         binding.getLocationButton.setOnClickListener {
             if (wearableDeviceConnected) {
-                Log.d(TAG_MSG, "sent")
-                val task = Wearable.getMessageClient(this).sendMessage(nodeId!!, ASK_LOC, null)
-                task.addOnCompleteListener {
-                    if (it.isSuccessful) {
-                        Log.d(TAG_MSG, "get location Message sent")
-                    }
-                }
+                Log.d(TAG, "sent")
+
+                sendMessages(nodeId!!, ASK_LOC, null, "Get location message event sent", "null")
             }
         }
     }
 
+    override fun onStop() {
+        super.onStop()
+        if (isFinishing) {
+            Log.d(TAG, "Wearable DESTROY : $wearableDeviceConnected")
 
-    @SuppressLint("SetTextI18n")
-    private fun initialiseDevicePairing(tempAct: Activity) {
-        //Coroutine
-        launch(Dispatchers.Default) {
-
-            try {
-                getNodesNew(tempAct.applicationContext)
-            } catch (e: Exception) {
-                Log.e(TAG_INIT, "Fail on get nodes : $e")
-            }
-        }
-    }
-
-    private fun getNodesNew(context: Context) {
-
-        val nodeTasks = Wearable.getNodeClient(context).connectedNodes
-
-        try {
-            val nodes = Tasks.await(nodeTasks)
-            Log.d(TAG_INIT, "Get nodes successfull")
-
-            for (node in nodes) {
-                this.nodeId = node.id
-                try {
-                    Wearable.getMessageClient(context).sendMessage(node.id, PAIRING, null)
-
-                } catch (exception: Exception) {
-                    Log.e(TAG_INIT, "Node pairing failed : $exception")
-                }
-            }
-
-        } catch (exception: Exception) {
-            Log.e(TAG_INIT, "Can't reach Wearable : $exception")
-        }
-
-    }
-
-    override fun onDataChanged(p0: DataEventBuffer) {
-    }
-
-    @SuppressLint("SetTextI18n")
-    override fun onMessageReceived(p0: MessageEvent) {
-        try {
-            val messageEventPath: String = p0.path
-            Log.d(TAG_MSG, "receive message $messageEventPath")
-
-            if (messageEventPath == PAIRING) {
-                Toast.makeText(
-                    activityContext,
-                    "Wearable device paired and app is open. Tap the \"Get the current Location\".",
-                    Toast.LENGTH_LONG
-                ).show()
-                binding.getLocationButton.visibility = View.VISIBLE
-                binding.checkConnectionBtn.visibility = View.INVISIBLE
-                wearableDeviceConnected = true
-
-            } else if (messageEventPath == EXIT) {
-                Toast.makeText(
-                    activityContext,
-                    "Wearable device app is stopped. Re-open it and connect it again.",
-                    Toast.LENGTH_LONG
-                ).show()
-                binding.getLocationButton.visibility = View.INVISIBLE
-                binding.checkConnectionBtn.visibility = View.VISIBLE
+            if (wearableDeviceConnected) {
                 wearableDeviceConnected = false
-            } else {
-                Log.d(TAG_INIT, "Unknown path : $messageEventPath")
+                sendMessages(nodeId!!, EXIT, null, "Mobile app destroyed event sent to wearable", "null")
             }
-        } catch (e: Exception) {
-            e.printStackTrace()
-            Log.d(TAG_INIT, "Handled")
+            try {
+                Wearable.getDataClient(activityContext!!).removeListener(this)
+                Wearable.getMessageClient(activityContext!!).removeListener(this)
+                Wearable.getCapabilityClient(activityContext!!).removeListener(this)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
         }
     }
-
-    override fun onCapabilityChanged(p0: CapabilityInfo) {
-    }
-
 
     override fun onPause() {
         super.onPause()
+
         try {
             Wearable.getDataClient(activityContext!!).removeListener(this)
             Wearable.getMessageClient(activityContext!!).removeListener(this)
@@ -160,6 +99,7 @@ class MainActivity : AppCompatActivity(), CoroutineScope by MainScope(),
 
     override fun onResume() {
         super.onResume()
+
         try {
             Wearable.getDataClient(activityContext!!).addListener(this)
             Wearable.getMessageClient(activityContext!!).addListener(this)
@@ -169,4 +109,107 @@ class MainActivity : AppCompatActivity(), CoroutineScope by MainScope(),
             e.printStackTrace()
         }
     }
+
+
+    @SuppressLint("SetTextI18n")
+    private fun initialiseDevicePairing(tempAct: Activity) {
+        // Coroutine
+        launch(Dispatchers.Default) {
+            try {
+                exploreNodes(tempAct.applicationContext)
+            } catch (e: Exception) {
+                Log.e(TAG, "Fail on get nodes : $e")
+            }
+        }
+    }
+
+    private fun exploreNodes(context: Context) {
+        val nodeTasks = Wearable.getNodeClient(context).connectedNodes
+
+        try {
+            val nodes = Tasks.await(nodeTasks)
+            Log.d(TAG, "Get nodes successfull")
+
+            for (node in nodes) {
+                this.nodeId = node.id
+                sendMessages(node.id, PAIRING, null, "Node paring message sent", "null")
+            }
+
+        } catch (exception: Exception) {
+            Log.e(TAG, "Can't reach Wearable : $exception")
+        }
+
+    }
+
+    private fun sendMessages(node: String, path: String, data: ByteArray?, msgSuccess: String?, msgError: String?) {
+        try {
+            val task = Wearable.getMessageClient(activityContext!!).sendMessage(node, path, data)
+            task.addOnCompleteListener {
+                if (it.isSuccessful) {
+                    Log.d(TAG, "Path: $path MSG: $msgSuccess")
+                } else {
+                    Log.e(TAG, "$msgError")
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Sending message error : $e")
+        }
+    }
+
+    override fun onDataChanged(p0: DataEventBuffer) {
+    }
+
+    @SuppressLint("SetTextI18n")
+    override fun onMessageReceived(p0: MessageEvent) {
+        val messageEventPath: String = p0.path
+        Log.d(TAG, "Message event receive : $messageEventPath")
+
+        when (messageEventPath) {
+            PAIRING -> {
+                Toast.makeText(
+                    activityContext,
+                    "Wearable device paired and app is open. Tap the \"Get the current Location\".",
+                    Toast.LENGTH_LONG
+                ).show()
+                binding.getLocationButton.visibility = View.VISIBLE
+                binding.checkConnectionBtn.visibility = View.INVISIBLE
+                wearableDeviceConnected = true
+            }
+            EXIT -> {
+                Toast.makeText(
+                    activityContext,
+                    "Wearable device app is stopped. Re-open it and connect it again.",
+                    Toast.LENGTH_LONG
+                ).show()
+                binding.getLocationButton.visibility = View.INVISIBLE
+                binding.checkConnectionBtn.visibility = View.VISIBLE
+                wearableDeviceConnected = false
+            }
+            ASK_LOC -> {
+                val json = JSONObject(String(p0.data))
+                Log.d(TAG, "revceive data rom wear : $json")
+
+                val jsonResponse = JSONObject()
+
+                if (allowFly) {
+                    jsonResponse.put("allow", true)
+                    jsonResponse.put("alt", 1400)
+                } else {
+                    jsonResponse.put("allow", false)
+                    jsonResponse.put("alt", 0)
+                }
+                allowFly = !allowFly
+                sendMessages(nodeId!!, FLY_INFO, jsonResponse.toString().toByteArray(), "Allow fly sent to the wearable", "null")
+            }
+            else -> {
+                Log.d(TAG, "Unknown path : $messageEventPath")
+            }
+        }
+    }
+
+    override fun onCapabilityChanged(p0: CapabilityInfo) {
+    }
+
+
+
 }

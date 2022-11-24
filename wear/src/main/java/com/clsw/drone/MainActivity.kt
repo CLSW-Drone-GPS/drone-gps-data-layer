@@ -10,6 +10,8 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.Looper
 import android.util.Log
+import android.view.View
+import android.widget.Toast
 
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
@@ -18,6 +20,8 @@ import androidx.wear.ambient.AmbientModeSupport.AmbientCallback
 import com.clsw.drone.databinding.ActivityMainBinding
 import com.google.android.gms.location.*
 import com.google.android.gms.wearable.*
+import org.json.JSONException
+import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
 class MainActivity : AppCompatActivity(), AmbientModeSupport.AmbientCallbackProvider,
@@ -25,37 +29,32 @@ class MainActivity : AppCompatActivity(), AmbientModeSupport.AmbientCallbackProv
     MessageClient.OnMessageReceivedListener,
     CapabilityClient.OnCapabilityChangedListener {
 
+
     private var activityContext: Context? = null
-
     private lateinit var binding: ActivityMainBinding
-
-    private var mobileDeviceConnected: Boolean = false
+    private lateinit var ambientController: AmbientModeSupport.AmbientController
 
     private val REQUEST_CODE = 101;
-
     private val PAIRING: String = "PAIRING"
     private val EXIT: String = "EXIT"
     private val ASK_LOC: String = "ASK_LOC"
+    private val FLY_INFO: String = "FLY_INFO"
 
-    private val TAG_INIT: String = "Initialisation"
-    private val TAG_MSG: String = "Messages"
     private val TAG: String = "Wear Drone"
-
-    private var node: String? = null
-
-    private lateinit var ambientController: AmbientModeSupport.AmbientController
 
     private lateinit var fusedLocationClient: FusedLocationProviderClient
     private lateinit var locationRequest: LocationRequest
     private lateinit var locationCallback: LocationCallback
 
     private var currentLocation: Location? = null
-
+    private var mobileDeviceConnected: Boolean = false
     private var permission: Boolean = false
+    private var node: String? = null
 
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
         binding = ActivityMainBinding.inflate(layoutInflater)
         val view = binding.root
         setContentView(view)
@@ -65,8 +64,68 @@ class MainActivity : AppCompatActivity(), AmbientModeSupport.AmbientCallbackProv
         // Enables Always-on
         ambientController = AmbientModeSupport.attach(this)
 
-        fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
+        initFusedClient()
 
+        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+            && ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
+            permission = true;
+        } else {
+            requestPermission()
+        }
+    }
+
+    override fun onPause() {
+        super.onPause()
+
+        try {
+            Wearable.getDataClient(activityContext!!).removeListener(this)
+            Wearable.getMessageClient(activityContext!!).removeListener(this)
+            Wearable.getCapabilityClient(activityContext!!).removeListener(this)
+
+            removeLocationUpdate()
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    override fun onResume() {
+        super.onResume()
+
+        try {
+            Wearable.getDataClient(activityContext!!).addListener(this)
+            Wearable.getMessageClient(activityContext!!).addListener(this)
+            Wearable.getCapabilityClient(activityContext!!).addListener(this, Uri.parse("wear://"), CapabilityClient.FILTER_REACHABLE)
+
+            addLocationUpdate()
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
+    override fun onStop() {
+        super.onStop()
+
+        Log.d(TAG, "Stopping wearable Device App")
+        if (mobileDeviceConnected && node != null) {
+            sendMessages(node!!, EXIT, null, "Exit wearable app event sent", "null")
+            removeLocationUpdate()
+            mobileDeviceConnected = false
+        }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+
+        if (mobileDeviceConnected && node != null) {
+            sendMessages(node!!, EXIT, null, "Exit wearable app event sent", "null")
+            removeLocationUpdate()
+        }
+    }
+
+    private fun initFusedClient() {
+        // Fused Location Client Initialization
+        fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
         locationRequest = LocationRequest().apply {
             interval = TimeUnit.SECONDS.toMillis(2)
             fastestInterval = TimeUnit.SECONDS.toMillis(1)
@@ -77,44 +136,26 @@ class MainActivity : AppCompatActivity(), AmbientModeSupport.AmbientCallbackProv
         locationCallback = object : LocationCallback() {
             override fun onLocationResult(p0: LocationResult) {
                 super.onLocationResult(p0)
-                Log.d(TAG, "Receive new Location !")
+
                 p0.lastLocation?.let {
                     currentLocation = it
-                    Log.d(TAG, "location in callback : ${it.latitude}")
-                } ?: run {
-                    Log.d(TAG, "Location information isn't available.")
                 }
             }
         }
+    }
 
-
-
-        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION)
-                == PackageManager.PERMISSION_GRANTED
-            && ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
-                == PackageManager.PERMISSION_GRANTED) {
-            permission = true;
-
-            fusedLocationClient.requestLocationUpdates(locationRequest, locationCallback, Looper.myLooper())
-
-        } else {
-            ActivityCompat.requestPermissions(
-                this, arrayOf(
-                    Manifest.permission.ACCESS_COARSE_LOCATION,
-                    Manifest.permission.ACCESS_FINE_LOCATION
-                ),
-                REQUEST_CODE
-            )
-        }
-
+    private fun requestPermission() {
+        ActivityCompat.requestPermissions(
+            this, arrayOf(
+                Manifest.permission.ACCESS_COARSE_LOCATION,
+                Manifest.permission.ACCESS_FINE_LOCATION
+            ),
+            REQUEST_CODE
+        )
     }
 
     @SuppressLint("MissingPermission")
-    override fun onRequestPermissionsResult(
-        requestCode: Int,
-        permissions: Array<out String>,
-        grantResults: IntArray
-    ) {
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
 
         if (requestCode == REQUEST_CODE) {
@@ -125,15 +166,10 @@ class MainActivity : AppCompatActivity(), AmbientModeSupport.AmbientCallbackProv
         }
     }
 
-    override fun onDataChanged(p0: DataEventBuffer) {
-    }
-
-    override fun onCapabilityChanged(p0: CapabilityInfo) {
-    }
 
     private fun isLocationEnabled(): Boolean {
-        val locationManager: LocationManager =
-            getSystemService(Context.LOCATION_SERVICE) as LocationManager
+        val locationManager: LocationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
+
         return locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER) || locationManager.isProviderEnabled(
             LocationManager.NETWORK_PROVIDER
         )
@@ -141,106 +177,113 @@ class MainActivity : AppCompatActivity(), AmbientModeSupport.AmbientCallbackProv
 
     @SuppressLint("MissingPermission")
     override fun onMessageReceived(p0: MessageEvent) {
-        try {
-            val messageEventPath: String = p0.path
-            Log.d(TAG, "onMessageReceived event received : $messageEventPath")
+        val messageEventPath: String = p0.path
+        Log.d(TAG, "Message event receive : $messageEventPath")
 
-                if (messageEventPath == PAIRING) {
-                    try {
-                        val nodeId: String = p0.sourceNodeId
-                        this.node = nodeId
-
-                        val task = Wearable.getMessageClient(activityContext!!).sendMessage(nodeId, PAIRING, null)
-
-                        task.addOnCompleteListener {
-                            if (it.isSuccessful) {
-                                Log.d(TAG_INIT, "Message sent.")
-                                binding.infoTxt.text = getText(R.string.waiting_for)
-                                mobileDeviceConnected = true
-                            }
-                            else {
-                                Log.d(TAG_INIT, "Message not sent.")
-                            }
-                        }
-
-                    } catch (e: Exception) {
-                        Log.d(TAG_INIT, "Paring Exception : $e")
-                    }
-            } else if (messageEventPath == ASK_LOC) {
+        when (messageEventPath) {
+            PAIRING -> {
+                val nodeId: String = p0.sourceNodeId
+                this.node = nodeId
+                binding.infoTxt.text = getString(R.string.waiting_for)
+                sendMessages(nodeId, PAIRING, null, "Pairing msg sent", "Pairing msg not sent")
+                addLocationUpdate()
+                mobileDeviceConnected = true
+            }
+            ASK_LOC -> {
                 if (permission && isLocationEnabled()) {
-                    Log.d(TAG, "location :${currentLocation?.latitude} ${currentLocation?.longitude}")
+                    val json = JSONObject()
+                    json.put("latitude", currentLocation?.latitude)
+                    json.put("longitude", currentLocation?.longitude)
+                    json.put("timestamp", currentLocation?.time)
+                    val payload: ByteArray = json.toString().toByteArray()
+                    sendMessages(node!!, ASK_LOC, payload, "Location sent to the mobile", "Location NOT sent to the mobile")
                 } else {
-                    Log.d(TAG, "Permission not set")
+                    Toast.makeText(
+                        activityContext,
+                        "Permission not set, you have to allow location on the device",
+                        Toast.LENGTH_LONG
+                    ).show()
                 }
-
             }
-        } catch (e: Exception) {
-            Log.d(TAG_MSG, "Handled in onMessageReceived")
-            e.printStackTrace()
+            FLY_INFO -> {
+                val json = JSONObject(String(p0.data))
+
+                try {
+                    val allow = json.get("allow") as Boolean
+                    val alt = json.get("alt") as Int
+
+                    setFlyInfo(allow, alt)
+                } catch (e: JSONException) {
+                    Log.e(TAG, "JSON obect on FLY INFO not correct : $e")
+                }
+            }
+            EXIT -> {
+                mobileDeviceConnected = false
+                binding.infoAlt.visibility = View.INVISIBLE
+                binding.infoTxt.text = getString(R.string.not_connected)
+                removeLocationUpdate()
+            }
+            else -> Log.d(TAG, "Unknown path : $messageEventPath")
         }
     }
 
+    @SuppressLint("SetTextI18n")
+    private fun setFlyInfo(allow: Boolean, alt: Int) {
+        if (allow) {
+            binding.infoTxt.text = getText(R.string.allow_fly)
+            binding.infoTxt.background = getDrawable(R.drawable.rounded_corner_frame_ok)
+            binding.infoAlt.text = "$alt m"
+            binding.infoAlt.visibility = View.VISIBLE
+        } else {
+            binding.infoTxt.text = getText(R.string.not_allow_fly)
+            binding.infoTxt.background = getDrawable(R.drawable.rounded_corner_frame_nope)
+            binding.infoAlt.visibility = View.INVISIBLE
+        }
+     }
 
-    override fun onPause() {
-        super.onPause()
+    private fun sendMessages(node: String, path: String, data: ByteArray?, msgSuccess: String?, msgError: String?) {
         try {
-            Wearable.getDataClient(activityContext!!).removeListener(this)
-            Wearable.getMessageClient(activityContext!!).removeListener(this)
-            Wearable.getCapabilityClient(activityContext!!).removeListener(this)
-
-            val removeTask = fusedLocationClient.removeLocationUpdates(locationCallback)
-            removeTask.addOnCompleteListener { task ->
-                if (task.isSuccessful) {
-                    Log.d(TAG, "Location Callback removed.")
+            val task = Wearable.getMessageClient(activityContext!!).sendMessage(node, path, data)
+            task.addOnCompleteListener {
+                if (it.isSuccessful) {
+                    Log.d(TAG, "Path: $path MSG: $msgSuccess")
                 } else {
-                    Log.d(TAG, "Failed to remove Location Callback.")
+                    Log.e(TAG, "$msgError")
                 }
             }
         } catch (e: Exception) {
-            e.printStackTrace()
+            Log.e(TAG, "Sending message error : $e")
         }
     }
-
 
     @SuppressLint("MissingPermission")
-    override fun onResume() {
-        super.onResume()
-        try {
-            Wearable.getDataClient(activityContext!!).addListener(this)
-            Wearable.getMessageClient(activityContext!!).addListener(this)
-            Wearable.getCapabilityClient(activityContext!!)
-                .addListener(this, Uri.parse("wear://"), CapabilityClient.FILTER_REACHABLE)
-            if (permission) {
-                fusedLocationClient.requestLocationUpdates(locationRequest, locationCallback, Looper.myLooper())
+    private fun addLocationUpdate() {
+        if (permission) {
+            val task = fusedLocationClient.requestLocationUpdates(locationRequest, locationCallback, Looper.myLooper())
+            if (task.isSuccessful) {
+                Log.d(TAG, "Location update added successfuly")
             }
-        } catch (e: Exception) {
-            e.printStackTrace()
+        }
+        else {
+            requestPermission()
         }
     }
 
-    override fun onStop() {
-        Log.d(TAG, "Stopping wearable Device App")
-        super.onStop()
-        if (mobileDeviceConnected && node != null) {
-            try {
-                val task = Wearable.getMessageClient(this).sendMessage(node!!, EXIT, null)
-                task.addOnCompleteListener {
-                    if (it.isSuccessful) {
-                        Log.d(TAG, "Exit event sent")
-                    }
-                }
-            } catch (e: Exception) {
-                Log.d(TAG, "Exception while exit")
-            }
-            val removeTask = fusedLocationClient.removeLocationUpdates(locationCallback)
-            removeTask.addOnCompleteListener { task ->
-                if (task.isSuccessful) {
-                    Log.d(TAG, "Location Callback removed.")
-                } else {
-                    Log.d(TAG, "Failed to remove Location Callback.")
-                }
+    private fun removeLocationUpdate() {
+        val removeTask = fusedLocationClient.removeLocationUpdates(locationCallback)
+        removeTask.addOnCompleteListener { task ->
+            if (task.isSuccessful) {
+                Log.d(TAG, "Location Callback removed.")
+            } else {
+                Log.d(TAG, "Failed to remove Location Callback.")
             }
         }
+    }
+
+    override fun onDataChanged(p0: DataEventBuffer) {
+    }
+
+    override fun onCapabilityChanged(p0: CapabilityInfo) {
     }
 
     override fun getAmbientCallback(): AmbientCallback = MyAmbientCallback()

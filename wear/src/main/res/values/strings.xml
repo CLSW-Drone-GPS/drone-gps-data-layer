@@ -12,6 +12,10 @@
     <string name="message_log">Message log</string>
     <string name="init">...</string>
     <string name="send_message_to_phone">Send Message to Phone</string>
+
+
     <string name="not_connected">Not connected</string>
-    <string name="waiting_for">Waiting for location approve</string>
+    <string name="waiting_for">Waiting for a location</string>
+    <string name="allow_fly">You are allow to fly here !</string>
+    <string name="not_allow_fly">It is forbidden to fly here…</string>
 </resources>
