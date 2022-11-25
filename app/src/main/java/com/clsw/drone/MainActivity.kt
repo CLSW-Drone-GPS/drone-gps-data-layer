@@ -3,6 +3,7 @@ package com.clsw.drone
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.Context
+import android.graphics.Color
 import android.net.Uri
 import android.os.Bundle
 import android.util.Log
@@ -10,15 +11,26 @@ import android.view.View
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import com.clsw.drone.databinding.ActivityMainBinding
+import com.github.kittinunf.fuel.Fuel
+import com.github.kittinunf.fuel.json.responseJson
+import com.google.android.gms.maps.CameraUpdateFactory
+import com.google.android.gms.maps.GoogleMap
+import com.google.android.gms.maps.OnMapReadyCallback
+import com.google.android.gms.maps.SupportMapFragment
+import com.google.android.gms.maps.model.LatLng
+import com.google.android.gms.maps.model.MarkerOptions
 import com.google.android.gms.tasks.Tasks
 import com.google.android.gms.wearable.*
+import com.google.maps.android.data.geojson.GeoJsonLayer
 import kotlinx.coroutines.*
 import org.json.JSONObject
+import kotlin.math.*
 
 class MainActivity : AppCompatActivity(), CoroutineScope by MainScope(),
     DataClient.OnDataChangedListener,
     MessageClient.OnMessageReceivedListener,
-    CapabilityClient.OnCapabilityChangedListener {
+    CapabilityClient.OnCapabilityChangedListener,
+    OnMapReadyCallback {
 
     var activityContext: Context? = null
 
@@ -34,7 +46,14 @@ class MainActivity : AppCompatActivity(), CoroutineScope by MainScope(),
 
     private lateinit var binding: ActivityMainBinding
 
+    private lateinit var mMap: GoogleMap
+
     private var allowFly = false
+
+    private var prevLat = 0.0
+    private var prevLong = 0.0
+
+    private lateinit var updateLocJob: Job
 
     @SuppressLint("SetTextI18n")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -47,6 +66,10 @@ class MainActivity : AppCompatActivity(), CoroutineScope by MainScope(),
         activityContext = this
         wearableDeviceConnected = false
 
+        val mapFragment = supportFragmentManager
+            .findFragmentById(R.id.map) as SupportMapFragment
+        mapFragment.getMapAsync(this)
+
         binding.checkConnectionBtn.setOnClickListener {
             if (!wearableDeviceConnected) {
                 val tempAct: Activity = activityContext as MainActivity
@@ -56,13 +79,13 @@ class MainActivity : AppCompatActivity(), CoroutineScope by MainScope(),
             }
         }
 
-        binding.getLocationButton.setOnClickListener {
-            if (wearableDeviceConnected) {
-                Log.d(TAG, "sent")
 
-                sendMessages(nodeId!!, ASK_LOC, null, "Get location message event sent", "null")
-            }
-        }
+//        binding.getLocationButton.setOnClickListener {
+//            if (wearableDeviceConnected) {
+//                Log.d(TAG, "sent")
+////                sendMessages(nodeId!!, ASK_LOC, null, "Get location message event sent", "null")
+//            }
+//        }
     }
 
     override fun onStop() {
@@ -123,6 +146,23 @@ class MainActivity : AppCompatActivity(), CoroutineScope by MainScope(),
         }
     }
 
+    private fun updateLocLoop() {
+        updateLocJob = launch(Dispatchers.Main) {
+            try {
+                var bool: Boolean = true
+                while (true) {
+                    sendMessages(nodeId!!, ASK_LOC, null, "Get location message event sent", "null")
+
+                    withContext(Dispatchers.IO) {
+                        Thread.sleep(10000)
+                    };
+                }
+            } catch (e: Exception) {
+
+            }
+        }
+    }
+
     private fun exploreNodes(context: Context) {
         val nodeTasks = Wearable.getNodeClient(context).connectedNodes
 
@@ -171,9 +211,11 @@ class MainActivity : AppCompatActivity(), CoroutineScope by MainScope(),
                     "Wearable device paired and app is open. Tap the \"Get the current Location\".",
                     Toast.LENGTH_LONG
                 ).show()
-                binding.getLocationButton.visibility = View.VISIBLE
+                binding.getLocationButton.visibility = View.INVISIBLE
                 binding.checkConnectionBtn.visibility = View.INVISIBLE
                 wearableDeviceConnected = true
+                updateLocLoop()
+
             }
             EXIT -> {
                 Toast.makeText(
@@ -184,10 +226,17 @@ class MainActivity : AppCompatActivity(), CoroutineScope by MainScope(),
                 binding.getLocationButton.visibility = View.INVISIBLE
                 binding.checkConnectionBtn.visibility = View.VISIBLE
                 wearableDeviceConnected = false
+
+                updateLocJob.cancel()
             }
             ASK_LOC -> {
                 val json = JSONObject(String(p0.data))
                 Log.d(TAG, "revceive data rom wear : $json")
+
+
+                val long = json.get("longitude") as Double
+                val lat = json.get("latitude") as Double
+                moveLocation(lat, long)
 
                 val jsonResponse = JSONObject()
 
@@ -210,6 +259,101 @@ class MainActivity : AppCompatActivity(), CoroutineScope by MainScope(),
     override fun onCapabilityChanged(p0: CapabilityInfo) {
     }
 
+    private fun deg2rad(deg: Double): Double {
+        return deg * (Math.PI/180)
+    }
+
+    private fun isLocationDifferent(lat: Double, long: Double): Boolean {
+
+        val R = 6371
+        var dLat = deg2rad(this.prevLat - lat)
+        var dLon = deg2rad(this.prevLong - long)
+
+        var a =
+            sin(dLat/2) * sin(dLat/2) +
+                    cos(deg2rad(lat)) * cos(deg2rad(prevLat)) *
+                    sin(dLon/2) * sin(dLon/2)
+
+        var c = 2 * atan2(sqrt(a), sqrt(1-a));
+        var d = R * c; // Distance in km
+
+        return d > 1;
+    }
+
+    private fun moveLocation(lat: Double, long: Double) {
+        if (!isLocationDifferent(lat, long)) return
+
+        prevLat = lat
+        prevLong = long
+
+        val newLoc = LatLng(lat, long)
+
+        Log.d(TAG, "Move location")
+
+        mMap.clear()
+        mMap.addMarker(MarkerOptions().position(newLoc).title("Current Location"))
+        mMap.moveCamera(CameraUpdateFactory.newLatLng(newLoc))
+
+        Fuel.get("https://api.cquest.org/drone?lat=$lat&lon=$long&rayon=5000&limite=50")
+            .responseJson { request, response, result ->
+                println(request)
+                println(response)
+                println(result)
+
+                var droneString: String = result.get().content
+                droneString = droneString.replace("Featurecollection","FeatureCollection")
+
+                Log.d("DroneString", droneString)
+
+                val droneGeoJson: JSONObject? = JSONObject(droneString)
+
+                val layer = GeoJsonLayer(mMap,droneGeoJson)
+                layer.addLayerToMap()
+
+                for (feature in layer.features) {
+                    feature.polygonStyle.fillColor = Color.rgb(127,82,255)
+                }
+            }
+    }
+
+    /**
+     * Manipulates the map once available.
+     * This callback is triggered when the map is ready to be used.
+     * This is where we can add markers or lines, add listeners or move the camera. In this case,
+     * we just add a marker near Sydney, Australia.
+     * If Google Play services is not installed on the device, the user will be prompted to install
+     * it inside the SupportMapFragment. This method will only be triggered once the user has
+     * installed Google Play services and returned to the app.
+     */
+    override fun onMapReady(googleMap: GoogleMap) {
+        mMap = googleMap
+
+        // Add a marker in Antibes and move the camera
+        val antibes = LatLng(43.580418, 7.125102)
+        mMap.addMarker(MarkerOptions().position(antibes).title("Marker in Antibes"))
+        mMap.moveCamera(CameraUpdateFactory.newLatLng(antibes))
+
+        Fuel.get("https://api.cquest.org/drone?lat=43.580418&lon=7.125102&rayon=5000&limite=50")
+            .responseJson { request, response, result ->
+                println(request)
+                println(response)
+                println(result)
+
+                var droneString: String = result.get().content
+                droneString = droneString.replace("Featurecollection","FeatureCollection")
+
+                Log.d("DroneString", droneString)
+
+                val droneGeoJson: JSONObject? = JSONObject(droneString)
+
+                val layer = GeoJsonLayer(mMap,droneGeoJson)
+                layer.addLayerToMap()
+
+                for (feature in layer.features) {
+                    feature.polygonStyle.fillColor = Color.rgb(127,82,255)
+                }
+            }
+    }
 
 
 }
