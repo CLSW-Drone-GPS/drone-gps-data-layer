@@ -24,6 +24,10 @@ import com.google.android.gms.wearable.*
 import com.google.maps.android.data.geojson.GeoJsonLayer
 import kotlinx.coroutines.*
 import org.json.JSONObject
+import java.text.SimpleDateFormat
+import java.time.LocalDateTime
+import java.time.format.DateTimeFormatter
+import java.util.*
 import kotlin.math.*
 
 class MainActivity : AppCompatActivity(), CoroutineScope by MainScope(),
@@ -78,6 +82,7 @@ class MainActivity : AppCompatActivity(), CoroutineScope by MainScope(),
                 initialiseDevicePairing(tempAct)
             }
         }
+
 
 
 //        binding.getLocationButton.setOnClickListener {
@@ -236,7 +241,10 @@ class MainActivity : AppCompatActivity(), CoroutineScope by MainScope(),
 
                 val long = json.get("longitude") as Double
                 val lat = json.get("latitude") as Double
+
+                if (!isLocationDifferent(lat, long)) return
                 moveLocation(lat, long)
+                saveToDB(lat, long)
 
                 val jsonResponse = JSONObject()
 
@@ -281,7 +289,6 @@ class MainActivity : AppCompatActivity(), CoroutineScope by MainScope(),
     }
 
     private fun moveLocation(lat: Double, long: Double) {
-        if (!isLocationDifferent(lat, long)) return
 
         prevLat = lat
         prevLong = long
@@ -355,5 +362,44 @@ class MainActivity : AppCompatActivity(), CoroutineScope by MainScope(),
             }
     }
 
+    private fun saveToDB(lat: Double, long: Double) {
+
+        val map = mapOf<String, String>(
+            "api-key" to "637724584dbec05fc7d3101f",
+            "Content-Type" to "application/json",
+            "Access-Control-Request-Headers" to "*" )
+
+        val sdf = SimpleDateFormat("yyyy-MM-dd HH:mm:ss")
+        val currentDate = sdf.format(Date())
+
+
+        val b = JSONObject(mapOf(
+            "lat" to lat,
+            "long" to long,
+            "date" to currentDate
+        ))
+
+        val c = JSONObject();
+        c.accumulate("dataSource", "DroneApp");
+        c.accumulate("database", "geo_local");
+        c.accumulate("collection", "all");
+        c.accumulate("document", b);
+
+        var url = "https://data.mongodb-api.com/app/data-pwjwq/endpoint/data/v1/action/insertOne"
+
+
+        Log.d(TAG, "Sending request FUEL DB")
+        Fuel.post(url)
+            .header(map)
+            .body(c.toString())
+            .response { request, response, result ->
+                println(request)
+                println(response)
+                val (bytes, error) = result
+                if (bytes != null) {
+                    println("[response bytes] ${String(bytes)}")
+                }
+            }
+    }
 
 }
