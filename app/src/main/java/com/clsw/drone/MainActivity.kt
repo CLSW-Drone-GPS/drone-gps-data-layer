@@ -21,7 +21,10 @@ import com.google.android.gms.maps.model.LatLng
 import com.google.android.gms.maps.model.MarkerOptions
 import com.google.android.gms.tasks.Tasks
 import com.google.android.gms.wearable.*
+import com.google.maps.android.PolyUtil
 import com.google.maps.android.data.geojson.GeoJsonLayer
+import com.google.maps.android.data.geojson.GeoJsonMultiPolygon
+import com.google.maps.android.data.geojson.GeoJsonPolygon
 import kotlinx.coroutines.*
 import org.json.JSONObject
 import java.text.SimpleDateFormat
@@ -59,6 +62,8 @@ class MainActivity : AppCompatActivity(), CoroutineScope by MainScope(),
 
     private lateinit var updateLocJob: Job
 
+    private var mapReady = false
+
     @SuppressLint("SetTextI18n")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -82,15 +87,6 @@ class MainActivity : AppCompatActivity(), CoroutineScope by MainScope(),
                 initialiseDevicePairing(tempAct)
             }
         }
-
-
-
-//        binding.getLocationButton.setOnClickListener {
-//            if (wearableDeviceConnected) {
-//                Log.d(TAG, "sent")
-////                sendMessages(nodeId!!, ASK_LOC, null, "Get location message event sent", "null")
-//            }
-//        }
     }
 
     override fun onStop() {
@@ -152,19 +148,22 @@ class MainActivity : AppCompatActivity(), CoroutineScope by MainScope(),
     }
 
     private fun updateLocLoop() {
-        updateLocJob = launch(Dispatchers.Main) {
-            try {
-                var bool: Boolean = true
+        try {
+
+            updateLocJob = launch(Dispatchers.Main) {
                 while (true) {
-                    sendMessages(nodeId!!, ASK_LOC, null, "Get location message event sent", "null")
+                    if (mapReady) {
+                        sendMessages(nodeId!!, ASK_LOC, null, "Get location message event sent", "null")
 
-                    withContext(Dispatchers.IO) {
-                        Thread.sleep(10000)
-                    };
+                        withContext(Dispatchers.IO) {
+                            Thread.sleep(10000)
+                        }
+                    }
                 }
-            } catch (e: Exception) {
-
             }
+        }
+        catch (e: Exception) {
+            Log.e(TAG, "exception in updateLocLoop $e")
         }
     }
 
@@ -235,6 +234,7 @@ class MainActivity : AppCompatActivity(), CoroutineScope by MainScope(),
                 updateLocJob.cancel()
             }
             ASK_LOC -> {
+
                 val json = JSONObject(String(p0.data))
                 Log.d(TAG, "revceive data rom wear : $json")
 
@@ -245,18 +245,6 @@ class MainActivity : AppCompatActivity(), CoroutineScope by MainScope(),
                 if (!isLocationDifferent(lat, long)) return
                 moveLocation(lat, long)
                 saveToDB(lat, long)
-
-                val jsonResponse = JSONObject()
-
-                if (allowFly) {
-                    jsonResponse.put("allow", true)
-                    jsonResponse.put("alt", 1400)
-                } else {
-                    jsonResponse.put("allow", false)
-                    jsonResponse.put("alt", 0)
-                }
-                allowFly = !allowFly
-                sendMessages(nodeId!!, FLY_INFO, jsonResponse.toString().toByteArray(), "Allow fly sent to the wearable", "null")
             }
             else -> {
                 Log.d(TAG, "Unknown path : $messageEventPath")
@@ -295,8 +283,6 @@ class MainActivity : AppCompatActivity(), CoroutineScope by MainScope(),
 
         val newLoc = LatLng(lat, long)
 
-        Log.d(TAG, "Move location")
-
         mMap.clear()
         mMap.addMarker(MarkerOptions().position(newLoc).title("Current Location"))
         mMap.moveCamera(CameraUpdateFactory.newLatLng(newLoc))
@@ -317,9 +303,29 @@ class MainActivity : AppCompatActivity(), CoroutineScope by MainScope(),
                 val layer = GeoJsonLayer(mMap,droneGeoJson)
                 layer.addLayerToMap()
 
+                allowFly = false
+
                 for (feature in layer.features) {
                     feature.polygonStyle.fillColor = Color.rgb(127,82,255)
+                    feature.polygonStyle.strokeWidth = 1f
+
+                    val polygonList: GeoJsonMultiPolygon? = feature.geometry as GeoJsonMultiPolygon
+                    for (poly in polygonList!!.polygons) {
+                        if (PolyUtil.containsLocation(lat, long, poly!!.outerBoundaryCoordinates, false)) {
+                            allowFly = true
+                        }
+                    }
                 }
+                val jsonResponse = JSONObject()
+
+                if (allowFly) {
+                    jsonResponse.put("allow", true)
+                    jsonResponse.put("alt", 50)
+                } else {
+                    jsonResponse.put("allow", false)
+                    jsonResponse.put("alt", 0)
+                }
+                sendMessages(nodeId!!, FLY_INFO, jsonResponse.toString().toByteArray(), "Allow fly sent to the wearable", "null")
             }
     }
 
@@ -334,32 +340,7 @@ class MainActivity : AppCompatActivity(), CoroutineScope by MainScope(),
      */
     override fun onMapReady(googleMap: GoogleMap) {
         mMap = googleMap
-
-        // Add a marker in Antibes and move the camera
-        val antibes = LatLng(43.580418, 7.125102)
-        mMap.addMarker(MarkerOptions().position(antibes).title("Marker in Antibes"))
-        mMap.moveCamera(CameraUpdateFactory.newLatLng(antibes))
-
-        Fuel.get("https://api.cquest.org/drone?lat=43.580418&lon=7.125102&rayon=5000&limite=50")
-            .responseJson { request, response, result ->
-                println(request)
-                println(response)
-                println(result)
-
-                var droneString: String = result.get().content
-                droneString = droneString.replace("Featurecollection","FeatureCollection")
-
-                Log.d("DroneString", droneString)
-
-                val droneGeoJson: JSONObject? = JSONObject(droneString)
-
-                val layer = GeoJsonLayer(mMap,droneGeoJson)
-                layer.addLayerToMap()
-
-                for (feature in layer.features) {
-                    feature.polygonStyle.fillColor = Color.rgb(127,82,255)
-                }
-            }
+        mapReady = true
     }
 
     private fun saveToDB(lat: Double, long: Double) {
