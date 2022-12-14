@@ -2,6 +2,8 @@
 
 Projet tenu par Antoine Vidal-Mazuy, Loic Madern & Antoine Huot-Marchand
 
+Rapport : [Rapport Projet Drone-GPS](./Rapport%Projet%Drone-GPS.pdf)
+
 ## Afin de lancer le projet, il est réaliser les étapes ci-dessous :
 
 - Activer la clé API Google Maps SDK for Android, attention à bien lié votre clé avec le nom du package : com.clsw.drone
